@@ -1,9 +1,9 @@
 # Credentials
 .env
 
-# Data and results
-data/
-results/
+# Large data files (uncomment if datasets grow large)
+# data/
+# results/
 
 # Python
 .venv/
