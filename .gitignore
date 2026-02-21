@@ -1,0 +1,18 @@
+# Credentials
+.env
+
+# Data and results
+data/
+results/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+
+# Test artifacts
+test_pipeline.yaml
+test_output.json

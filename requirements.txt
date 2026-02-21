@@ -1,0 +1,4 @@
+docetl==0.2.6
+pyrate-limiter==3.7.0
+matplotlib>=3.10
+numpy>=2.0

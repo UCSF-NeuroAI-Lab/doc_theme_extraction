@@ -1,0 +1,140 @@
+default_model: azure/gpt-4.1-2025-04-14
+
+system_prompt:
+  dataset_description: >
+    A collection of scraped web pages about ultramarathon running, including
+    race reports, interviews, scientific research on hallucinations and
+    psychology, and athlete profiles. Some pages may contain access-denied
+    messages instead of actual content.
+  persona: >
+    A qualitative research analyst skilled at identifying recurring themes
+    and patterns across diverse textual sources.
+
+datasets:
+  input_data:
+    type: file
+    path: data/dataset.json
+
+operations:
+  # Step 1: Extract themes from each document with verbatim quotes
+  - name: extract_themes
+    type: map
+    prompt: |
+      Analyze the following web page content and extract the key themes.
+
+      URL: {{ input.url }}
+      Content:
+      {{ input.scraped_text }}
+
+      Instructions:
+      - If the content is an access-denied message, error page, or otherwise
+        inaccessible, return content_type as "error" and themes as a single
+        entry with theme "access_denied" and verbatim_quote "N/A".
+      - If the content is too short or lacks substance (e.g., just navigation
+        elements), return content_type as "minimal" and extract whatever themes
+        you can.
+      - Otherwise, return content_type as "article" and extract 3-5 main themes.
+      - For each theme, provide:
+        - theme: a short phrase (2-5 words)
+        - verbatim_quote: a direct quote from the text that best supports this
+          theme (copy the exact words from the content, do not paraphrase)
+    output:
+      schema:
+        themes: "list[{theme: string, verbatim_quote: string}]"
+        content_type: string
+        content_summary: string
+
+  # Step 2: Flatten themes so each theme becomes its own row
+  - name: unnest_themes
+    type: unnest
+    unnest_key: themes
+
+  # Step 3: Deduplicate and merge similar themes across documents
+  - name: deduplicate_themes
+    type: resolve
+    embedding_model: azure/text-embedding-3-large-1
+    blocking_keys:
+      - themes
+    blocking_threshold: 0.4
+    comparison_prompt: |
+      Compare these two themes extracted from ultramarathon running content:
+
+      Theme 1: {{ input1.themes.theme }}
+      Source 1: {{ input1.content_summary }}
+
+      Theme 2: {{ input2.themes.theme }}
+      Source 2: {{ input2.content_summary }}
+
+      Are these themes referring to the same or very similar concept?
+      Consider that short phrases like "perseverance" and "overcoming adversity"
+      may be conceptually overlapping even if worded differently.
+      Respond with "True" if they are essentially the same theme, or
+      "False" if they are distinct themes.
+    resolution_prompt: |
+      The following themes have been identified as duplicates or near-duplicates.
+      Merge them into a single canonical theme name (a short phrase, 2-5 words).
+
+      {% for entry in inputs %}
+      - {{ entry.themes.theme }}
+      {% endfor %}
+
+      Provide a single, standardized theme name that best represents all of these.
+    output:
+      schema:
+        canonical_theme: string
+
+  # Step 3b: Fix canonical_theme for singletons (resolve leaves it as content_summary)
+  - name: fix_canonical_theme
+    type: code_map
+    code: |
+      def transform(doc):
+          ct = doc.get("canonical_theme")
+          original = doc.get("themes", {}).get("theme", "")
+          if not ct or len(ct) > 60:
+              return {"canonical_theme": original}
+          return {"canonical_theme": ct}
+
+  # Step 4: Summarize each theme with source documents and verbatim quotes
+  - name: summarize_themes
+    type: reduce
+    reduce_key:
+      - canonical_theme
+    prompt: |
+      You are analyzing the theme "{{ inputs[0].canonical_theme }}" which appeared
+      across multiple documents about ultramarathon running.
+
+      Here are the source documents and supporting quotes for this theme:
+      {% for item in inputs %}
+      ---
+      Source URL: {{ item.url }}
+      Verbatim Quote: "{{ item.themes.verbatim_quote }}"
+      Document Summary: {{ item.content_summary }}
+      {% endfor %}
+      ---
+
+      Please provide:
+      1. theme_report: A brief synthesis (1-2 paragraphs) of how this theme
+         manifests across the sources, noting patterns and nuances.
+      2. source_urls: The list of all source URLs where this theme was found.
+      3. verbatim_examples: The most illustrative verbatim quotes (copy them
+         exactly from above, select the 1-3 best ones).
+    output:
+      schema:
+        theme_report: string
+        source_urls: "list[string]"
+        verbatim_examples: "list[string]"
+
+pipeline:
+  steps:
+    - name: analyze
+      input: input_data
+      operations:
+        - extract_themes
+        - unnest_themes
+        - deduplicate_themes
+        - fix_canonical_theme
+        - summarize_themes
+  output:
+    type: file
+    path: results/theme_results.json
+    intermediate_dir: results/intermediate
